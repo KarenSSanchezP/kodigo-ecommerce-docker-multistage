@@ -1,0 +1,95 @@
+name: kodigo-ecommerce-multistage
+
+services:
+  db:
+    build:
+      context: ./db
+      dockerfile: Dockerfile
+    image: kodigo-multistage/mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:?Configura DB_DATABASE en .env}
+      MYSQL_USER: ${DB_USERNAME:?Configura DB_USERNAME en .env}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Configura DB_PASSWORD en .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Configura MYSQL_ROOT_PASSWORD en .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent -u\"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - data
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runner
+    image: kodigo-multistage/laravel:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data
+      - app
+    expose:
+      - "9000"
+
+  nginx:
+    build:
+      context: ./backend
+      dockerfile: docker/nginx/Dockerfile
+    image: kodigo-multistage/nginx:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8093:80"
+    depends_on:
+      - backend
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/up || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+    image: kodigo-multistage/nextjs:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_BASE_URL: http://nginx/api/v1
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+  mysql_data:
+    # Volumen independiente del proyecto API previo; NO borres con down -v.
